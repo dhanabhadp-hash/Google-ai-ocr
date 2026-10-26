@@ -1,0 +1,6 @@
+{
+  "name": "OCR INV. คลังยา รพ.สบปราบ",
+  "description": "ระบบ OCR สกัดข้อมูลบิลยาคลังยา รพ.สบปราบ บันทึกลง Google Sheets และ Google Drive พร้อมวิเคราะห์ชื่อยาสามัญและแจ้งเตือน LINE OA",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
