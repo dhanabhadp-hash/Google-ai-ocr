@@ -27,6 +27,7 @@ export default function App() {
   const [records, setRecords] = useState<SheetRowRecord[]>(loadRecords);
   const [history, setHistory] = useState<UploadBatchRecord[]>(loadUploadHistory);
   const [currentTab, setCurrentTab] = useState<string>('upload');
+  const [targetBillNo, setTargetBillNo] = useState<string | null>(null);
 
   // Modals state
   const [lightboxState, setLightboxState] = useState<{
@@ -42,6 +43,20 @@ export default function App() {
 
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+
+  // Check URL params for deep linking to specific bill (e.g. ?bill=BL-6710-0421 or ?invoiceNo=...)
+  useEffect(() => {
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      const billParam = urlParams.get('bill') || urlParams.get('invoiceNo') || urlParams.get('inv');
+      if (billParam) {
+        setTargetBillNo(billParam);
+        setCurrentTab('table');
+      }
+    } catch (e) {
+      console.warn('URL param parse notice:', e);
+    }
+  }, []);
 
   // Sync to storage on change
   useEffect(() => {
@@ -263,6 +278,8 @@ export default function App() {
             onDeleteMultipleRecords={handleDeleteMultipleRecords}
             onOpenLightbox={handleOpenLightbox}
             settings={settings}
+            initialInvoiceBill={targetBillNo}
+            onClearInitialBill={() => setTargetBillNo(null)}
           />
         )}
 

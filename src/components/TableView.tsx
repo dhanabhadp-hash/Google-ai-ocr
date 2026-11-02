@@ -1,20 +1,16 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   Search, 
-  Filter, 
   Trash2, 
   Edit3, 
   ExternalLink, 
   Check, 
   X, 
-  Download, 
-  RefreshCw, 
-  Database,
-  ArrowUpDown,
-  Building,
+  Eye, 
+  CheckCircle2,
+  FileText,
   Calendar,
-  Eye,
-  Plus
+  Share2
 } from 'lucide-react';
 import { SheetRowRecord, AppSettings } from '../types';
 
@@ -25,6 +21,8 @@ interface TableViewProps {
   onDeleteMultipleRecords: (ids: string[]) => void;
   onOpenLightbox: (imageUrl: string, title: string, driveUrl?: string) => void;
   settings: AppSettings;
+  initialInvoiceBill?: string | null;
+  onClearInitialBill?: () => void;
 }
 
 export const TableView: React.FC<TableViewProps> = ({
@@ -32,8 +30,9 @@ export const TableView: React.FC<TableViewProps> = ({
   onUpdateRecord,
   onDeleteRecord,
   onDeleteMultipleRecords,
-  onOpenLightbox,
   settings,
+  initialInvoiceBill,
+  onClearInitialBill,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCompany, setSelectedCompany] = useState<string>('ALL');
@@ -42,6 +41,17 @@ export const TableView: React.FC<TableViewProps> = ({
   const [selectedRowIds, setSelectedRowIds] = useState<string[]>([]);
   const [currentPage, setCurrentPage] = useState(1);
   const pageSize = 20;
+
+  // Dedicated Bill Detail Viewer Modal
+  const [viewingBillNo, setViewingBillNo] = useState<string | null>(initialInvoiceBill || null);
+  const [copiedLink, setCopiedLink] = useState(false);
+
+  // Sync initialInvoiceBill from deep link (?bill=...)
+  useEffect(() => {
+    if (initialInvoiceBill) {
+      setViewingBillNo(initialInvoiceBill);
+    }
+  }, [initialInvoiceBill]);
 
   // Companies dropdown list
   const companyList = useMemo(() => {
@@ -60,6 +70,7 @@ export const TableView: React.FC<TableViewProps> = ({
         (r.invoiceNo && r.invoiceNo.toLowerCase().includes(term)) ||
         (r.companyName && r.companyName.toLowerCase().includes(term)) ||
         (r.productName && r.productName.toLowerCase().includes(term)) ||
+        (r.unit && r.unit.toLowerCase().includes(term)) ||
         (r.genericName && r.genericName.toLowerCase().includes(term)) ||
         (r.taxId && r.taxId.includes(term)) ||
         (r.gpuCode && r.gpuCode.includes(term)) ||
@@ -80,10 +91,51 @@ export const TableView: React.FC<TableViewProps> = ({
     return filteredRecords.slice(start, start + pageSize);
   }, [filteredRecords, currentPage, pageSize]);
 
+  // Items for currently viewed bill modal
+  const viewingBillItems = useMemo(() => {
+    if (!viewingBillNo) return [];
+    return records.filter(
+      r => (r.invoiceNo || '').trim().toLowerCase() === viewingBillNo.trim().toLowerCase()
+    );
+  }, [records, viewingBillNo]);
+
+  const viewingBillSummary = useMemo(() => {
+    if (viewingBillItems.length === 0) return null;
+    const first = viewingBillItems[0];
+    const totalAmount = viewingBillItems.reduce((acc, r) => acc + (r.totalPrice || 0), 0);
+    const grandTotal = first.grandTotal || Math.round(totalAmount * 1.07 * 100) / 100;
+
+    return {
+      invoiceNo: first.invoiceNo,
+      companyName: first.companyName,
+      taxId: first.taxId,
+      invoiceDate: first.invoiceDate,
+      salesperson: first.salesperson,
+      timestamp: first.timestamp,
+      imageUrl: first.imageUrl,
+      vatStatus: first.vatStatus,
+      grandTotal: grandTotal,
+      totalAmount: totalAmount,
+      totalItems: viewingBillItems.length,
+      items: viewingBillItems,
+    };
+  }, [viewingBillItems]);
+
+  // Copy shareable deep link
+  const handleCopyBillLink = (invNo: string) => {
+    const shareUrl = `${window.location.origin}/?bill=${encodeURIComponent(invNo)}`;
+    navigator.clipboard.writeText(shareUrl).then(() => {
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2500);
+    }).catch(() => {
+      // fallback
+    });
+  };
+
   // Start inline editing
   const handleStartEdit = (row: SheetRowRecord) => {
     setEditingRowId(row.id);
-    setEditFormData({ ...row });
+    setEditFormData({ ...row, unit: row.unit || 'กล่อง' });
   };
 
   // Save inline edit
@@ -134,14 +186,14 @@ export const TableView: React.FC<TableViewProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <h2 className="text-lg font-bold text-slate-800">
-                ข้อมูลบิลยาใน Google Sheets (ตาราง 15 คอลัมน์)
+                ข้อมูลบิลยาใน Google Sheets (ตาราง 16 คอลัมน์ A ถึง P)
               </h2>
               <span className="text-xs px-2.5 py-1 rounded-full font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
                 {records.length}/500 แถว
               </span>
             </div>
             <p className="text-xs text-slate-500 mt-0.5">
-              โครงสร้างตารางคอลัมน์ A ถึง O ตามที่กำหนดในชีท "บิล Invoice" สามารถค้นหาและแก้ไขข้อความที่ผิดพลาดได้ทันที
+              โครงสร้างตารางคอลัมน์ A ถึง P (รวมคอลัมน์ J: หน่วย) พร้อมลิงก์เปิดดูบิลแยกรายใบ และซิงค์ Google Drive
             </p>
           </div>
 
@@ -152,7 +204,7 @@ export const TableView: React.FC<TableViewProps> = ({
               rel="noopener noreferrer"
               className="px-3 py-2 text-xs font-semibold rounded-xl bg-emerald-50 text-emerald-800 hover:bg-emerald-100 border border-emerald-200 transition-colors flex items-center gap-1.5"
             >
-              <span>เปิดชีทจริง</span>
+              <span>เปิด Google Sheet</span>
               <ExternalLink className="w-3.5 h-3.5" />
             </a>
 
@@ -175,7 +227,7 @@ export const TableView: React.FC<TableViewProps> = ({
             <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
             <input
               type="text"
-              placeholder="ค้นหาเลขที่บิล, ชื่อบริษัท, ชื่อยาการค้า, ชื่อยาสามัญ, Tax ID, รหัส GPU/TPU..."
+              placeholder="ค้นหาเลขที่บิล, บริษัท, ชื่อยา, หน่วย (ขวด/กล่อง/vial/Amp), Tax ID, GPU/TPU..."
               value={searchTerm}
               onChange={(e) => {
                 setSearchTerm(e.target.value);
@@ -233,21 +285,24 @@ export const TableView: React.FC<TableViewProps> = ({
                 </th>
                 <th className="py-3 px-2 w-10 text-center">#</th>
                 <th className="py-3 px-3 min-w-[130px]">A: Timestamp</th>
-                <th className="py-3 px-3 min-w-[120px] font-bold text-emerald-900">B: Invoice No</th>
-                <th className="py-3 px-3 min-w-[180px]">C: Company Name</th>
+                <th className="py-3 px-3 min-w-[130px] font-bold text-emerald-900">B: Invoice No</th>
+                <th className="py-3 px-3 min-w-[170px]">C: Company Name</th>
                 <th className="py-3 px-2 min-w-[110px]">D: Tax ID</th>
                 <th className="py-3 px-2 min-w-[95px]">E: Date</th>
                 <th className="py-3 px-2 min-w-[110px]">F: Salesperson</th>
                 <th className="py-3 px-2 min-w-[80px]">G: GPU</th>
                 <th className="py-3 px-2 min-w-[80px]">H: TPU</th>
                 <th className="py-3 px-3 min-w-[200px] font-bold text-slate-900">I: Product Name (การค้า)</th>
-                <th className="py-3 px-2 min-w-[70px] text-right">J: จำนวน</th>
-                <th className="py-3 px-2 min-w-[85px] text-right">K: ราคา/หน่วย</th>
-                <th className="py-3 px-3 min-w-[95px] text-right">L: ราคารวม</th>
-                <th className="py-3 px-3 min-w-[100px] text-right font-bold text-emerald-800">M: Grand Total</th>
-                <th className="py-3 px-2 min-w-[80px] text-center">N: Image</th>
+                <th className="py-3 px-2 min-w-[90px] bg-emerald-50 text-emerald-950 font-bold text-center">
+                  J: หน่วย (Unit) 💊
+                </th>
+                <th className="py-3 px-2 min-w-[70px] text-right">K: จำนวน</th>
+                <th className="py-3 px-2 min-w-[85px] text-right">L: ราคา/หน่วย</th>
+                <th className="py-3 px-3 min-w-[95px] text-right">M: ราคารวม</th>
+                <th className="py-3 px-3 min-w-[105px] text-right font-bold text-emerald-800">N: Grand Total</th>
+                <th className="py-3 px-2 min-w-[100px] text-center">O: ลิงก์บิล / Drive</th>
                 <th className="py-3 px-3 min-w-[180px] bg-teal-50/70 text-teal-950 font-bold">
-                  O: ชื่อยาสามัญ (AI) ✨
+                  P: ชื่อยาสามัญ (AI) ✨
                 </th>
                 <th className="py-3 px-2 w-16 text-center">จัดการ</th>
               </tr>
@@ -255,7 +310,7 @@ export const TableView: React.FC<TableViewProps> = ({
             <tbody className="divide-y divide-slate-100">
               {paginatedRecords.length === 0 ? (
                 <tr>
-                  <td colSpan={18} className="py-12 text-center text-slate-400">
+                  <td colSpan={19} className="py-12 text-center text-slate-400">
                     ไม่พบข้อมูลรายการยาที่ตรงกับเงื่อนไขการค้นหา
                   </td>
                 </tr>
@@ -357,7 +412,18 @@ export const TableView: React.FC<TableViewProps> = ({
                           />
                         </td>
 
-                        {/* J: Quantity */}
+                        {/* J: Unit */}
+                        <td className="py-2 px-2 bg-emerald-50/50">
+                          <input
+                            type="text"
+                            value={editFormData.unit || ''}
+                            onChange={(e) => setEditFormData({ ...editFormData, unit: e.target.value })}
+                            className="w-full px-1.5 py-1 text-xs border rounded-md border-emerald-400 bg-white text-emerald-900 font-semibold"
+                            placeholder="หน่วย"
+                          />
+                        </td>
+
+                        {/* K: Quantity */}
                         <td className="py-2 px-2">
                           <input
                             type="number"
@@ -371,7 +437,7 @@ export const TableView: React.FC<TableViewProps> = ({
                           />
                         </td>
 
-                        {/* K: Unit Price */}
+                        {/* L: Unit Price */}
                         <td className="py-2 px-2">
                           <input
                             type="number"
@@ -386,7 +452,7 @@ export const TableView: React.FC<TableViewProps> = ({
                           />
                         </td>
 
-                        {/* L: Total Price */}
+                        {/* M: Total Price */}
                         <td className="py-2 px-2">
                           <input
                             type="number"
@@ -397,7 +463,7 @@ export const TableView: React.FC<TableViewProps> = ({
                           />
                         </td>
 
-                        {/* M: Grand Total */}
+                        {/* N: Grand Total */}
                         <td className="py-2 px-2">
                           <input
                             type="number"
@@ -408,12 +474,12 @@ export const TableView: React.FC<TableViewProps> = ({
                           />
                         </td>
 
-                        {/* N: Image URL */}
+                        {/* O: Image URL */}
                         <td className="py-2 px-2 text-center">
                           <span className="text-[10px] text-slate-400">Drive</span>
                         </td>
 
-                        {/* O: Generic Name */}
+                        {/* P: Generic Name */}
                         <td className="py-2 px-2">
                           <input
                             type="text"
@@ -473,9 +539,16 @@ export const TableView: React.FC<TableViewProps> = ({
                         {row.timestamp}
                       </td>
 
-                      {/* B: Invoice No */}
-                      <td className="py-2.5 px-3 font-semibold text-slate-900 whitespace-nowrap">
-                        {row.invoiceNo}
+                      {/* B: Invoice No - Clickable to open Bill Viewer */}
+                      <td className="py-2.5 px-3 whitespace-nowrap">
+                        <button
+                          onClick={() => setViewingBillNo(row.invoiceNo)}
+                          className="font-semibold text-emerald-700 hover:text-emerald-900 hover:underline flex items-center gap-1 group text-left"
+                          title="คลิกเพื่อดูรายการและรายละเอียดของบิลนี้ทั้งหมด"
+                        >
+                          <span>{row.invoiceNo}</span>
+                          <Eye className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity text-emerald-600" />
+                        </button>
                       </td>
 
                       {/* C: Company Name */}
@@ -513,40 +586,59 @@ export const TableView: React.FC<TableViewProps> = ({
                         {row.productName}
                       </td>
 
-                      {/* J: Quantity */}
+                      {/* J: Unit (หน่วย) */}
+                      <td className="py-2.5 px-2 text-center bg-emerald-50/30">
+                        <span className="inline-block px-2 py-0.5 rounded-md font-semibold text-emerald-800 bg-emerald-100/80 border border-emerald-200">
+                          {row.unit || 'กล่อง'}
+                        </span>
+                      </td>
+
+                      {/* K: Quantity */}
                       <td className="py-2.5 px-2 text-right font-medium text-slate-700">
                         {Number(row.quantity).toLocaleString()}
                       </td>
 
-                      {/* K: Unit Price */}
+                      {/* L: Unit Price */}
                       <td className="py-2.5 px-2 text-right text-slate-600">
                         ฿{Number(row.unitPrice).toFixed(2)}
                       </td>
 
-                      {/* L: Total Price */}
+                      {/* M: Total Price */}
                       <td className="py-2.5 px-3 text-right font-semibold text-slate-800">
                         ฿{Number(row.totalPrice).toLocaleString('th-TH', { minimumFractionDigits: 2 })}
                       </td>
 
-                      {/* M: Grand Total */}
+                      {/* N: Grand Total */}
                       <td className="py-2.5 px-3 text-right font-bold text-emerald-700 whitespace-nowrap">
                         ฿{Number(row.grandTotal).toLocaleString('th-TH', { minimumFractionDigits: 2 })}
                       </td>
 
-                      {/* N: Image URL */}
+                      {/* O: Image URL / Direct Bill Navigation */}
                       <td className="py-2.5 px-2 text-center">
-                        <a
-                          href={row.imageUrl || settings.googleDriveFolderUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex p-1 rounded-md bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200"
-                          title="เปิดรูปใน Google Drive"
-                        >
-                          <Eye className="w-3.5 h-3.5" />
-                        </a>
+                        <div className="flex items-center justify-center gap-1">
+                          {/* Dedicated Bill Viewer button */}
+                          <button
+                            onClick={() => setViewingBillNo(row.invoiceNo)}
+                            className="p-1 rounded-md bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 transition-colors"
+                            title="เปิดดูรายละเอียดบิลใบนี้"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                          </button>
+
+                          {/* Direct Google Drive File Link */}
+                          <a
+                            href={row.imageUrl || settings.googleDriveFolderUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="p-1 rounded-md bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 transition-colors"
+                            title="เปิดดูไฟล์ใน Google Drive"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                          </a>
+                        </div>
                       </td>
 
-                      {/* O: Generic Name */}
+                      {/* P: Generic Name */}
                       <td className="py-2.5 px-3 bg-teal-50/40 text-teal-900 font-medium">
                         {row.genericName || '-'}
                       </td>
@@ -611,6 +703,193 @@ export const TableView: React.FC<TableViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* ========================================================================= */}
+      {/* Interactive Bill Viewer Modal (Dedicated Per-Bill View & Navigation)     */}
+      {/* ========================================================================= */}
+      {viewingBillNo && viewingBillSummary && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5 overflow-y-auto">
+          <div className="bg-white rounded-2xl max-w-4xl w-full border border-slate-200 shadow-2xl overflow-hidden my-auto animate-in fade-in zoom-in-95 duration-200">
+            {/* Modal Header */}
+            <div className="bg-gradient-to-r from-emerald-800 to-teal-800 text-white p-5 flex items-start justify-between">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <FileText className="w-6 h-6 text-emerald-300" />
+                  <h3 className="text-xl font-bold tracking-tight">
+                    บิลเลขที่: {viewingBillSummary.invoiceNo}
+                  </h3>
+                  <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-700/80 text-emerald-100 border border-emerald-500/30">
+                    {viewingBillSummary.totalItems} รายการ
+                  </span>
+                </div>
+                <p className="text-emerald-100 text-sm flex items-center gap-3">
+                  <span>ผู้จำหน่าย: <b>{viewingBillSummary.companyName}</b></span>
+                  {viewingBillSummary.taxId && viewingBillSummary.taxId !== '-' && (
+                    <span className="text-emerald-200 text-xs font-mono">
+                      (Tax ID: {viewingBillSummary.taxId})
+                    </span>
+                  )}
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    setViewingBillNo(null);
+                    if (onClearInitialBill) onClearInitialBill();
+                  }}
+                  className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-colors"
+                  title="ปิด"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Quick Actions & Deep Link Bar */}
+            <div className="bg-slate-50 border-b border-slate-200 px-5 py-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-3 text-slate-600">
+                <span className="flex items-center gap-1">
+                  <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                  วันที่: <b>{viewingBillSummary.invoiceDate}</b>
+                </span>
+                <span>•</span>
+                <span>พนักงานขาย: <b>{viewingBillSummary.salesperson || '-'}</b></span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {/* Shareable Link Button */}
+                <button
+                  onClick={() => handleCopyBillLink(viewingBillSummary.invoiceNo)}
+                  className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 font-medium flex items-center gap-1.5 transition-colors shadow-2xs"
+                  title="คัดลอกลิงก์ตรงสำหรับเปิดดูบิลนี้"
+                >
+                  {copiedLink ? (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                      <span className="text-emerald-600 font-semibold">คัดลอกลิงก์แล้ว!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Share2 className="w-3.5 h-3.5 text-slate-500" />
+                      <span>คัดลอกลิงก์บิลนี้</span>
+                    </>
+                  )}
+                </button>
+
+                {/* Direct Google Drive File Link */}
+                <a
+                  href={viewingBillSummary.imageUrl || settings.googleDriveFolderUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium flex items-center gap-1.5 transition-colors shadow-2xs"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>เปิดไฟล์ใน Google Drive</span>
+                </a>
+              </div>
+            </div>
+
+            {/* Bill Line Items Table */}
+            <div className="p-5 space-y-4 max-h-[60vh] overflow-y-auto">
+              <div>
+                <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
+                  ตารางรายการยาและเวชภัณฑ์ในบิลนี้
+                </h4>
+
+                <div className="border border-slate-200 rounded-xl overflow-hidden">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead className="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200">
+                      <tr>
+                        <th className="py-2.5 px-3 w-8">#</th>
+                        <th className="py-2.5 px-3 min-w-[180px]">ชื่อสินค้า (ชื่อยาการค้า)</th>
+                        <th className="py-2.5 px-3 min-w-[140px] bg-teal-50/70 text-teal-950 font-bold">
+                          ชื่อยาสามัญ (Generic Name) ✨
+                        </th>
+                        <th className="py-2.5 px-2 min-w-[80px] bg-emerald-50 text-emerald-950 font-bold text-center">
+                          หน่วย (Unit) 💊
+                        </th>
+                        <th className="py-2.5 px-2 w-20 text-right">จำนวน</th>
+                        <th className="py-2.5 px-2 w-24 text-right">ราคา/หน่วย</th>
+                        <th className="py-2.5 px-3 w-28 text-right font-bold text-slate-800">ราคารวม</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {viewingBillSummary.items.map((item, idx) => (
+                        <tr key={item.id} className="hover:bg-slate-50/80">
+                          <td className="py-2.5 px-3 text-slate-400 font-medium">{idx + 1}</td>
+                          <td className="py-2.5 px-3 font-semibold text-slate-800">
+                            <div>{item.productName}</div>
+                            {(item.gpuCode || item.tpuCode) && (
+                              <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                                {item.gpuCode ? `GPU: ${item.gpuCode} ` : ''}
+                                {item.tpuCode ? `TPU: ${item.tpuCode}` : ''}
+                              </div>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3 bg-teal-50/30 text-teal-900 font-medium">
+                            {item.genericName || '-'}
+                          </td>
+                          <td className="py-2.5 px-2 text-center bg-emerald-50/20">
+                            <span className="inline-block px-2 py-0.5 rounded-md font-bold text-emerald-800 bg-emerald-100 border border-emerald-200">
+                              {item.unit || 'กล่อง'}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-2 text-right font-semibold text-slate-700">
+                            {Number(item.quantity).toLocaleString()}
+                          </td>
+                          <td className="py-2.5 px-2 text-right text-slate-600">
+                            ฿{Number(item.unitPrice).toFixed(2)}
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-bold text-slate-900">
+                            ฿{Number(item.totalPrice).toLocaleString('th-TH', { minimumFractionDigits: 2 })}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Bill Totals Summary Card */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-xs space-y-1">
+                  <div className="font-bold text-slate-700">สถานะการตรวจสอบภาษี (VAT Status)</div>
+                  <div className="text-slate-600 flex items-center gap-2 pt-1">
+                    <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                      รวม VAT 7%
+                    </span>
+                    <span>ราคาสินค้ารวม VAT 7% ถูกต้องตามระเบียบพัสดุ</span>
+                  </div>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-emerald-50/60 border border-emerald-200 text-right space-y-1">
+                  <div className="text-xs text-slate-500">ยอดรวมทั้งสิ้นของบิล (Grand Total)</div>
+                  <div className="text-2xl font-black text-emerald-800">
+                    ฿{Number(viewingBillSummary.grandTotal).toLocaleString('th-TH', { minimumFractionDigits: 2 })}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="bg-slate-50 border-t border-slate-200 px-5 py-3 flex items-center justify-between text-xs">
+              <span className="text-slate-400">
+                Timestamp ที่บันทึก: {viewingBillSummary.timestamp}
+              </span>
+              <button
+                onClick={() => {
+                  setViewingBillNo(null);
+                  if (onClearInitialBill) onClearInitialBill();
+                }}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-900 text-white font-semibold transition-colors"
+              >
+                ปิดหน้าต่าง
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

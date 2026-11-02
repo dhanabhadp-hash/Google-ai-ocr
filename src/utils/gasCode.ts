@@ -22,6 +22,7 @@ const CONFIG = {
 };
 
 // 1. ฟังก์ชั่นสร้างหัวตาราง (Headers A: Timestamp ถึง O: ชื่อยาสามัญ)
+// 1. ฟังก์ชั่นสร้างหัวตาราง (Headers A: Timestamp ถึง P: ชื่อยาสามัญ)
 function setupSheetHeaders() {
   const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
   let sheet = ss.getSheetByName(CONFIG.SHEET_NAME);
@@ -40,12 +41,13 @@ function setupSheetHeaders() {
     'GPU Code',       // G
     'TPU Code',       // H
     'Product Name',   // I
-    'Quantity',       // J
-    'Unit Price',     // K
-    'Total Price',    // L
-    'Grand Total',    // M
-    'Image URL',      // N
-    'ชื่อยาสามัญ'     // O
+    'Unit (หน่วย)',   // J
+    'Quantity',       // K
+    'Unit Price',     // L
+    'Total Price',    // M
+    'Grand Total',    // N
+    'Image URL',      // O
+    'ชื่อยาสามัญ'     // P
   ];
   
   // ตรวจสอบว่ามีหัวตารางหรือยัง
@@ -103,16 +105,21 @@ function handleSaveInvoice(payload) {
   const invoice = payload.invoice;
   let fileUrl = invoice.driveUrl || '';
   
-  // บันทึกไฟล์ลง Google Drive หากส่ง Base64 มา
+  // บันทึกไฟล์ลง Google Drive พร้อมตั้งชื่อแยกลิงก์รายบิลอย่างชัดเจน
   if (payload.fileBase64 && payload.fileName) {
     try {
       const folder = DriveApp.getFolderById(CONFIG.DRIVE_FOLDER_ID);
-      const cleanBase64 = payload.fileBase64.replace(/^data:([a-zA-Z0-9_\\-\\.\\/]+);base64,/, '');
+      const cleanBase64 = payload.fileBase64.replace(/^data:([a-zA-Z0-9_\-\.\/]+);base64,/, '');
       const decodedBytes = Utilities.base64Decode(cleanBase64);
-      const blob = Utilities.newBlob(decodedBytes, payload.mimeType || 'image/jpeg', payload.fileName);
+      const safeInv = String(invoice.invoiceNo || 'INV').replace(/[/\\?%*:|"<>]/g, '_');
+      const safeCompany = String(invoice.companyName || 'คลังยา').replace(/[/\\?%*:|"<>]/g, '_');
+      const ext = (payload.mimeType === 'application/pdf' || String(payload.fileName).toLowerCase().endsWith('.pdf')) ? 'pdf' : 'jpg';
+      const distinctFileName = 'บิล_' + safeInv + '_' + safeCompany + '_' + Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyyMMdd_HHmmss') + '.' + ext;
+      
+      const blob = Utilities.newBlob(decodedBytes, payload.mimeType || 'image/jpeg', distinctFileName);
       const file = folder.createFile(blob);
       file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-      fileUrl = file.getUrl();
+      fileUrl = file.getUrl(); // ลิงก์ตรงดูเฉพาะบิลนี้บน Google Drive
     } catch (err) {
       Logger.log('Drive upload warning: ' + err.toString());
     }
@@ -135,6 +142,7 @@ function handleSaveInvoice(payload) {
     tpuCode: '',
     productName: 'รายการยา',
     genericName: '',
+    unit: 'กล่อง',
     quantity: 1,
     unitPrice: invoice.grandTotal,
     totalPrice: invoice.grandTotal
@@ -152,17 +160,18 @@ function handleSaveInvoice(payload) {
       it.gpuCode || '',             // G: GPU Code
       it.tpuCode || '',             // H: TPU Code
       it.productName || '-',        // I: Product Name
-      Number(it.quantity || 1),     // J: Quantity
-      Number(it.unitPrice || 0),    // K: Unit Price
-      Number(it.totalPrice || 0),   // L: Total Price
-      Number(invoice.grandTotal || 0), // M: Grand Total
-      fileUrl,                      // N: Image URL
-      it.genericName || ''          // O: ชื่อยาสามัญ
+      it.unit || 'กล่อง',           // J: Unit หน่วยนับ (ขวด, กล่อง, vial, Amp ฯลฯ)
+      Number(it.quantity || 1),     // K: Quantity
+      Number(it.unitPrice || 0),    // L: Unit Price
+      Number(it.totalPrice || 0),   // M: Total Price
+      Number(invoice.grandTotal || 0), // N: Grand Total
+      fileUrl,                      // O: Image URL แยกลิงก์รายบิล
+      it.genericName || ''          // P: ชื่อยาสามัญ
     ]);
   }
   
   if (rowsToInsert.length > 0) {
-    sheet.getRange(sheet.getLastRow() + 1, 1, rowsToInsert.length, 15).setValues(rowsToInsert);
+    sheet.getRange(sheet.getLastRow() + 1, 1, rowsToInsert.length, 16).setValues(rowsToInsert);
   }
   
   // ส่งการแจ้งเตือน LINE หากมีการตั้งค่า Token
@@ -178,38 +187,64 @@ function handleSaveInvoice(payload) {
   };
 }
 
-// 4. ดึงข้อมูล 500 แถวล่าสุดจาก Sheet
+// 4. ดึงข้อมูล 500 แถวล่าสุดจาก Sheet (รองรับทั้ง 15 และ 16 คอลัมน์)
 function handleGetRecords() {
   const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
   const sheet = ss.getSheetByName(CONFIG.SHEET_NAME);
   if (!sheet) return [];
   
   const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
   if (lastRow <= 1) return [];
   
   // อ่านข้อมูลไม่เกิน 500 แถว
   const numRows = Math.min(lastRow - 1, CONFIG.MAX_ROWS_LIMIT);
-  const values = sheet.getRange(2, 1, numRows, 15).getValues();
+  const hasUnitCol = lastCol >= 16;
+  const colCount = hasUnitCol ? 16 : 15;
+  const values = sheet.getRange(2, 1, numRows, colCount).getValues();
   
   return values.map(function(row, idx) {
-    return {
-      id: 'row_' + (idx + 2),
-      timestamp: String(row[0] || ''),
-      invoiceNo: String(row[1] || ''),
-      companyName: String(row[2] || ''),
-      taxId: String(row[3] || ''),
-      invoiceDate: String(row[4] || ''),
-      salesperson: String(row[5] || ''),
-      gpuCode: String(row[6] || ''),
-      tpuCode: String(row[7] || ''),
-      productName: String(row[8] || ''),
-      quantity: Number(row[9] || 0),
-      unitPrice: Number(row[10] || 0),
-      totalPrice: Number(row[11] || 0),
-      grandTotal: Number(row[12] || 0),
-      imageUrl: String(row[13] || ''),
-      genericName: String(row[14] || '')
-    };
+    if (hasUnitCol) {
+      return {
+        id: 'row_' + (idx + 2),
+        timestamp: String(row[0] || ''),
+        invoiceNo: String(row[1] || ''),
+        companyName: String(row[2] || ''),
+        taxId: String(row[3] || ''),
+        invoiceDate: String(row[4] || ''),
+        salesperson: String(row[5] || ''),
+        gpuCode: String(row[6] || ''),
+        tpuCode: String(row[7] || ''),
+        productName: String(row[8] || ''),
+        unit: String(row[9] || 'กล่อง'),
+        quantity: Number(row[10] || 0),
+        unitPrice: Number(row[11] || 0),
+        totalPrice: Number(row[12] || 0),
+        grandTotal: Number(row[13] || 0),
+        imageUrl: String(row[14] || ''),
+        genericName: String(row[15] || '')
+      };
+    } else {
+      return {
+        id: 'row_' + (idx + 2),
+        timestamp: String(row[0] || ''),
+        invoiceNo: String(row[1] || ''),
+        companyName: String(row[2] || ''),
+        taxId: String(row[3] || ''),
+        invoiceDate: String(row[4] || ''),
+        salesperson: String(row[5] || ''),
+        gpuCode: String(row[6] || ''),
+        tpuCode: String(row[7] || ''),
+        productName: String(row[8] || ''),
+        unit: 'กล่อง',
+        quantity: Number(row[9] || 0),
+        unitPrice: Number(row[10] || 0),
+        totalPrice: Number(row[11] || 0),
+        grandTotal: Number(row[12] || 0),
+        imageUrl: String(row[13] || ''),
+        genericName: String(row[14] || '')
+      };
+    }
   });
 }
 

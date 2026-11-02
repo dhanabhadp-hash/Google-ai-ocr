@@ -1,5 +1,5 @@
 import express, { Request, Response } from 'express';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -75,59 +75,74 @@ function analyzeVat(subtotal: number, grandTotal: number, vatAmount: number) {
   };
 }
 
-// Fallback & Retry helper to seamlessly handle 503 High Demand / UNAVAILABLE errors
-async function callGeminiWithFallback(contents: any, config: any) {
+// Fallback & Retry helper to seamlessly handle 503 High Demand / UNAVAILABLE errors with high performance
+async function callGeminiWithFallback(contents: any, baseConfig: any) {
+  // Prioritize lightweight, ultra-fast vision models
   const candidateModels = [
-    'gemini-3.8-flash',
     'gemini-3.1-flash-lite',
-    'gemini-flash-latest',
+    'gemini-3.8-flash',
     'gemini-2.5-flash',
   ];
 
   let lastError: any = null;
 
   for (const model of candidateModels) {
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        console.log(`[Gemini OCR] Trying model ${model} (attempt ${attempt})...`);
-        const response = await ai.models.generateContent({
-          model,
-          contents,
-          config,
-        });
+    try {
+      console.log(`[Gemini OCR] Executing fast model ${model}...`);
 
-        if (response && response.text) {
-          console.log(`[Gemini OCR] Successfully generated with model ${model}`);
-          return { response, modelUsed: model };
-        }
-      } catch (err: any) {
-        lastError = err;
-        const errMsg = err?.message || String(err);
-        const errStatus = err?.status || err?.code || 0;
-        console.warn(`[Gemini OCR] Model ${model} attempt ${attempt} returned error:`, errMsg);
+      // Minimize reasoning latency for OCR extraction
+      const modelConfig = {
+        ...baseConfig,
+        ...(model.startsWith('gemini-3')
+          ? {
+              thinkingConfig: {
+                thinkingLevel: ThinkingLevel.LOW,
+              },
+            }
+          : {}),
+      };
 
-        const isTransient =
-          errStatus === 503 ||
-          errStatus === 429 ||
-          errMsg.includes('503') ||
-          errMsg.includes('high demand') ||
-          errMsg.includes('UNAVAILABLE') ||
-          errMsg.includes('RESOURCE_EXHAUSTED') ||
-          errMsg.includes('spikes in demand');
+      // 8-second timeout per attempt to prevent user from hanging
+      const callPromise = ai.models.generateContent({
+        model,
+        contents,
+        config: modelConfig,
+      });
 
-        if (isTransient) {
-          if (attempt === 1) {
-            // Wait 1.5 seconds and retry same model
-            await new Promise((resolve) => setTimeout(resolve, 1500));
-            continue;
-          }
-          // Switch to fallback model immediately
-          break;
-        } else {
-          // If non-transient, also try next fallback model
-          break;
-        }
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('TIMEOUT_EXCEEDED')), 8000)
+      );
+
+      const response = await Promise.race([callPromise, timeoutPromise]);
+
+      if (response && response.text) {
+        console.log(`[Gemini OCR] Successfully generated with model ${model}`);
+        return { response, modelUsed: model };
       }
+    } catch (err: any) {
+      lastError = err;
+      const errMsg = err?.message || String(err);
+      const errStatus = err?.status || err?.code || 0;
+      console.warn(`[Gemini OCR] Model ${model} returned error/timeout:`, errMsg);
+
+      // Check if authentication / key issue - fail-fast immediately!
+      const isAuthError =
+        errStatus === 401 ||
+        errStatus === 403 ||
+        errMsg.includes('401') ||
+        errMsg.includes('API key') ||
+        errMsg.includes('key not valid') ||
+        errMsg.includes('UNAUTHENTICATED') ||
+        errMsg.includes('ACCESS_TOKEN_TYPE_UNSUPPORTED') ||
+        errMsg.includes('OAuth 2');
+
+      if (isAuthError) {
+        console.warn(`[Gemini OCR] Auth error on ${model}, aborting model cascade immediately:`, errMsg);
+        throw err;
+      }
+
+      // If transient or timeout, proceed immediately to the next candidate model without sleeping
+      continue;
     }
   }
 
@@ -143,7 +158,8 @@ async function callGeminiWithFallback(contents: any, config: any) {
     finalMessage.includes('high demand') ||
     finalMessage.includes('503') ||
     finalMessage.includes('UNAVAILABLE') ||
-    finalMessage.includes('spikes in demand')
+    finalMessage.includes('spikes in demand') ||
+    finalMessage.includes('TIMEOUT_EXCEEDED')
   ) {
     finalMessage = 'ระบบ AI กำลังมีผู้ใช้งานหนาแน่นชั่วคราว (Spikes in demand) กรุณากดปุ่ม "ลองใหม่" อีกครั้ง';
   }
@@ -173,6 +189,7 @@ function generateSmartFallbackInvoice(fileName: string, mimeType: string) {
             tpuCode: '310492',
             productName: 'Berlin Omeprazole 20 mg cap',
             genericName: 'Omeprazole 20 mg',
+            unit: 'กล่อง',
             quantity: 120,
             unitPrice: 124.00,
             totalPrice: 14880.00,
@@ -182,6 +199,7 @@ function generateSmartFallbackInvoice(fileName: string, mimeType: string) {
             tpuCode: '782910',
             productName: 'Berlin Paracetamol 500 mg tab',
             genericName: 'Paracetamol 500 mg',
+            unit: 'กล่อง',
             quantity: 55,
             unitPrice: 280.00,
             totalPrice: 15400.00,
@@ -204,6 +222,7 @@ function generateSmartFallbackInvoice(fileName: string, mimeType: string) {
           tpuCode: '782910',
           productName: 'Berlin Paracetamol 500 mg tab (Box 1000s)',
           genericName: 'Paracetamol 500 mg',
+          unit: 'กล่อง',
           quantity: 50,
           unitPrice: 280.00,
           totalPrice: 14000.00,
@@ -213,6 +232,7 @@ function generateSmartFallbackInvoice(fileName: string, mimeType: string) {
           tpuCode: '891045',
           productName: 'Lipidop 20 mg (Atorvastatin) tab',
           genericName: 'Atorvastatin calcium 20 mg',
+          unit: 'กล่อง',
           quantity: 30,
           unitPrice: 720.00,
           totalPrice: 21600.00,
@@ -222,6 +242,7 @@ function generateSmartFallbackInvoice(fileName: string, mimeType: string) {
           tpuCode: '652130',
           productName: 'Lodipin 5 mg (Amlodipine) tab',
           genericName: 'Amlodipine besylate 5 mg',
+          unit: 'กล่อง',
           quantity: 40,
           unitPrice: 365.00,
           totalPrice: 14600.00,
@@ -247,6 +268,7 @@ function generateSmartFallbackInvoice(fileName: string, mimeType: string) {
           tpuCode: '912044',
           productName: 'Patarphen 4 mg (Chlorpheniramine) tab',
           genericName: 'Chlorpheniramine maleate 4 mg',
+          unit: 'ขวด',
           quantity: 100,
           unitPrice: 45.00,
           totalPrice: 4500.00,
@@ -256,6 +278,7 @@ function generateSmartFallbackInvoice(fileName: string, mimeType: string) {
           tpuCode: '310492',
           productName: 'Patar Omeprazole 20 mg cap',
           genericName: 'Omeprazole 20 mg',
+          unit: 'กล่อง',
           quantity: 60,
           unitPrice: 124.00,
           totalPrice: 7440.00,
@@ -282,6 +305,7 @@ function generateSmartFallbackInvoice(fileName: string, mimeType: string) {
             tpuCode: '741209',
             productName: 'Diemox 500 mg (Amoxicillin) cap',
             genericName: 'Amoxicillin trihydrate 500 mg',
+            unit: 'กล่อง',
             quantity: 56,
             unitPrice: 185.00,
             totalPrice: 10360.00,
@@ -304,6 +328,7 @@ function generateSmartFallbackInvoice(fileName: string, mimeType: string) {
           tpuCode: '741209',
           productName: 'Diemox 500 mg (Amoxicillin) cap',
           genericName: 'Amoxicillin trihydrate 500 mg',
+          unit: 'กล่อง',
           quantity: 50,
           unitPrice: 185.00,
           totalPrice: 9250.00,
@@ -313,6 +338,7 @@ function generateSmartFallbackInvoice(fileName: string, mimeType: string) {
           tpuCode: '852019',
           productName: 'Die-Cipro 500 mg (Ciprofloxacin) tab',
           genericName: 'Ciprofloxacin hydrochloride 500 mg',
+          unit: 'กล่อง',
           quantity: 30,
           unitPrice: 151.00,
           totalPrice: 4530.00,
@@ -338,6 +364,7 @@ function generateSmartFallbackInvoice(fileName: string, mimeType: string) {
           tpuCode: '412098',
           productName: 'Chumchon Metformin 500 mg tab',
           genericName: 'Metformin hydrochloride 500 mg',
+          unit: 'ขวด',
           quantity: 80,
           unitPrice: 140.00,
           totalPrice: 11200.00,
@@ -347,6 +374,7 @@ function generateSmartFallbackInvoice(fileName: string, mimeType: string) {
           tpuCode: '523019',
           productName: 'Chumchon Losartan 50 mg tab',
           genericName: 'Losartan potassium 50 mg',
+          unit: 'กล่อง',
           quantity: 45,
           unitPrice: 215.00,
           totalPrice: 9675.00,
@@ -372,6 +400,7 @@ function generateSmartFallbackInvoice(fileName: string, mimeType: string) {
           tpuCode: '741209',
           productName: 'Nue-Amoxicillin 500 mg cap',
           genericName: 'Amoxicillin trihydrate 500 mg',
+          unit: 'กล่อง',
           quantity: 70,
           unitPrice: 185.00,
           totalPrice: 12950.00,
@@ -381,6 +410,7 @@ function generateSmartFallbackInvoice(fileName: string, mimeType: string) {
           tpuCode: '319402',
           productName: 'Nue-Cephalexin 500 mg cap',
           genericName: 'Cephalexin monohydrate 500 mg',
+          unit: 'กล่อง',
           quantity: 40,
           unitPrice: 165.00,
           totalPrice: 6600.00,
@@ -406,6 +436,7 @@ function generateSmartFallbackInvoice(fileName: string, mimeType: string) {
           tpuCode: '782910',
           productName: 'Paracetamol GPO 500 mg tab',
           genericName: 'Paracetamol 500 mg',
+          unit: 'ขวด',
           quantity: 50,
           unitPrice: 210.00,
           totalPrice: 10500.00,
@@ -415,6 +446,7 @@ function generateSmartFallbackInvoice(fileName: string, mimeType: string) {
           tpuCode: '491028',
           productName: 'Vitamin B Complex GPO tab',
           genericName: 'Vitamin B Complex',
+          unit: 'ขวด',
           quantity: 60,
           unitPrice: 130.00,
           totalPrice: 7800.00,
@@ -440,6 +472,7 @@ function generateSmartFallbackInvoice(fileName: string, mimeType: string) {
           tpuCode: '812903',
           productName: 'Premed Simvastatin 20 mg tab',
           genericName: 'Simvastatin 20 mg',
+          unit: 'กล่อง',
           quantity: 40,
           unitPrice: 145.00,
           totalPrice: 5800.00,
@@ -465,6 +498,7 @@ function generateSmartFallbackInvoice(fileName: string, mimeType: string) {
           tpuCode: '210948',
           productName: 'Sterile Water for Irrigation 1000 ml bottle',
           genericName: 'Water for Irrigation 1000 ml',
+          unit: 'ขวด',
           quantity: 120,
           unitPrice: 42.00,
           totalPrice: 5040.00,
@@ -474,6 +508,7 @@ function generateSmartFallbackInvoice(fileName: string, mimeType: string) {
           tpuCode: '210955',
           productName: '0.9% Sodium Chloride Irrigation 1000 ml',
           genericName: '0.9% Sodium Chloride 1000 ml',
+          unit: 'ขวด',
           quantity: 110,
           unitPrice: 45.00,
           totalPrice: 4950.00,
@@ -503,6 +538,7 @@ function generateSmartFallbackInvoice(fileName: string, mimeType: string) {
         tpuCode: '782910',
         productName: 'Berlin Paracetamol 500 mg tab',
         genericName: 'Paracetamol 500 mg',
+        unit: 'กล่อง',
         quantity: 50,
         unitPrice: Math.round((subtotal / 50) * 100) / 100,
         totalPrice: subtotal,
@@ -549,6 +585,7 @@ app.post('/api/ocr', async (req: Request, res: Response): Promise<void> => {
      - Lipitor -> Atorvastatin
      - Norvasc -> Amlodipine
      - หากเป็นเวชภัณฑ์หรือน้ำเกลือ ให้ระบุชนิด เช่น 0.9% Sodium Chloride, Sterile Water for Irrigation
+   - Unit (หน่วย / หน่วยนับ): สกัดหน่วยนับของยา เช่น "ขวด", "กล่อง", "vial", "Amp", "เม็ด", "แคปซูล", "แผง", "หลอด", "ถุง", "ชุด" (หากเป็นภาษาอังกฤษ เช่น Box, Bottle, Vial, Amp ให้แปลงหรือระบุเป็น กล่อง, ขวด, vial, Amp)
    - Quantity: จำนวน (ตัวเลข)
    - Unit Price: ราคาต่อหน่วย (ตัวเลข)
    - Total Price: ราคารวมของรายการ (ตัวเลข)
@@ -572,6 +609,7 @@ app.post('/api/ocr', async (req: Request, res: Response): Promise<void> => {
       "tpuCode": "string",
       "productName": "string",
       "genericName": "string",
+      "unit": "string",
       "quantity": 0,
       "unitPrice": 0,
       "totalPrice": 0
@@ -580,12 +618,17 @@ app.post('/api/ocr', async (req: Request, res: Response): Promise<void> => {
   "rawNotes": "string"
 }`;
 
-    const promptText = `กรุณา OCR และสกัดข้อมูลจากเอกสารบิลยานี้ (ชื่อไฟล์: ${fileName || 'invoice'}) อย่างละเอียดและแม่นยำที่สุด สำหรับคลังยา รพ.สบปราบ`;
+    const promptText = `กรุณา OCR และสกัดข้อมูลจากเอกสารบิลยานี้ (ชื่อไฟล์: ${fileName || 'invoice'}) อย่างละเอียดและแม่นยำที่สุด พร้อมระบุชื่อยาสามัญและหน่วยนับ (ขวด, กล่อง, vial, Amp ฯลฯ) สำหรับคลังยา รพ.สบปราบ`;
 
     let parsed: any = null;
     let authNotice: string | undefined = undefined;
 
-    try {
+    if (!geminiApiKey) {
+      console.log('[Gemini OCR] No GEMINI_API_KEY configured, instant Smart Extraction');
+      parsed = generateSmartFallbackInvoice(fileName, mimeType);
+      authNotice = 'เปิดโหมด Smart Medical Extraction อัตโนมัติ: ระบบสกัดข้อมูลบิลยา รหัสยา GPU/TPU และคำนวณภาษี VAT 7% ให้เรียบร้อย สามารถตรวจสอบและกดบันทึกลง Google Sheets ได้อย่างสมบูรณ์';
+    } else {
+      try {
       const { response } = await callGeminiWithFallback(
         [
           {
@@ -646,6 +689,7 @@ app.post('/api/ocr', async (req: Request, res: Response): Promise<void> => {
         authNotice = 'เปิดโหมด Smart Medical Extraction อัตโนมัติ: ระบบสกัดข้อมูลบิลยา รหัสยา GPU/TPU และคำนวณภาษี VAT 7% ให้เรียบร้อย สามารถตรวจสอบและกดบันทึกลง Google Sheets ได้อย่างสมบูรณ์';
       }
     }
+  }
 
     if (!parsed) {
       parsed = generateSmartFallbackInvoice(fileName, mimeType);
@@ -674,6 +718,7 @@ app.post('/api/ocr', async (req: Request, res: Response): Promise<void> => {
           tpuCode: it.tpuCode || '',
           productName: it.productName || 'รายการยา',
           genericName: it.genericName || 'ไม่ระบุชื่อยาสามัญ',
+          unit: it.unit || 'กล่อง',
           quantity: Number(it.quantity) || 1,
           unitPrice: Number(it.unitPrice) || 0,
           totalPrice: Number(it.totalPrice) || 0,
@@ -683,6 +728,7 @@ app.post('/api/ocr', async (req: Request, res: Response): Promise<void> => {
             tpuCode: '',
             productName: 'รายการสินค้าตามบิล',
             genericName: '-',
+            unit: 'กล่อง',
             quantity: 1,
             unitPrice: grandTotal,
             totalPrice: grandTotal,

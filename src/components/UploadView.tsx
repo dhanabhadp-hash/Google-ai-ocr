@@ -98,6 +98,68 @@ export const UploadView: React.FC<UploadViewProps> = ({
     });
   };
 
+  // High-performance image optimizer for fast OCR upload & inference
+  const optimizeImageForOcr = async (file: File): Promise<{ base64Data: string; mimeType: string }> => {
+    // If PDF, keep original data
+    if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+      const base64 = await fileToBase64(file);
+      return { base64Data: base64, mimeType: 'application/pdf' };
+    }
+
+    // For images, downsample high-res camera photos to optimal ~1800px max dimension
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const dataUrl = e.target?.result as string;
+        const img = new Image();
+        img.onload = () => {
+          try {
+            const maxDim = 1800; // Optimal resolution for hospital pharmacy bills
+            let width = img.width;
+            let height = img.height;
+
+            if (width > maxDim || height > maxDim) {
+              if (width > height) {
+                height = Math.round((height * maxDim) / width);
+                width = maxDim;
+              } else {
+                width = Math.round((width * maxDim) / height);
+                height = maxDim;
+              }
+            }
+
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              ctx.imageSmoothingEnabled = true;
+              ctx.imageSmoothingQuality = 'high';
+              ctx.drawImage(img, 0, 0, width, height);
+
+              // 0.82 quality gives crisp text while reducing payload by up to 90%
+              const compressed = canvas.toDataURL('image/jpeg', 0.82);
+              resolve({ base64Data: compressed, mimeType: 'image/jpeg' });
+              return;
+            }
+          } catch (err) {
+            console.warn('Image optimization fallback:', err);
+          }
+          resolve({ base64Data: dataUrl, mimeType: file.type || 'image/jpeg' });
+        };
+        img.onerror = () => {
+          resolve({ base64Data: dataUrl, mimeType: file.type || 'image/jpeg' });
+        };
+        img.src = dataUrl;
+      };
+      reader.onerror = async () => {
+        const raw = await fileToBase64(file);
+        resolve({ base64Data: raw, mimeType: file.type || 'image/jpeg' });
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
   // Client-side fallback if server or network encounter any issue
   const createClientFallback = (fileName: string) => {
     const nameLower = (fileName || '').toLowerCase();
@@ -118,6 +180,7 @@ export const UploadView: React.FC<UploadViewProps> = ({
             tpuCode: '782910',
             productName: 'Berlin Paracetamol 500 mg tab (Box 1000s)',
             genericName: 'Paracetamol 500 mg',
+            unit: 'กล่อง',
             quantity: 50,
             unitPrice: 280.00,
             totalPrice: 14000.00,
@@ -128,6 +191,7 @@ export const UploadView: React.FC<UploadViewProps> = ({
             tpuCode: '891045',
             productName: 'Lipidop 20 mg (Atorvastatin) tab',
             genericName: 'Atorvastatin calcium 20 mg',
+            unit: 'กล่อง',
             quantity: 30,
             unitPrice: 720.00,
             totalPrice: 21600.00,
@@ -138,6 +202,7 @@ export const UploadView: React.FC<UploadViewProps> = ({
             tpuCode: '652130',
             productName: 'Lodipin 5 mg (Amlodipine) tab',
             genericName: 'Amlodipine besylate 5 mg',
+            unit: 'กล่อง',
             quantity: 40,
             unitPrice: 365.00,
             totalPrice: 14600.00,
@@ -162,6 +227,7 @@ export const UploadView: React.FC<UploadViewProps> = ({
           tpuCode: '782910',
           productName: 'Paracetamol 500 mg tab (คลังยา)',
           genericName: 'Paracetamol 500 mg',
+          unit: 'กล่อง',
           quantity: 50,
           unitPrice: 250.00,
           totalPrice: 12500.00,
@@ -172,6 +238,7 @@ export const UploadView: React.FC<UploadViewProps> = ({
           tpuCode: '741209',
           productName: 'Amoxicillin 500 mg cap (คลังยา)',
           genericName: 'Amoxicillin 500 mg',
+          unit: 'กล่อง',
           quantity: 50,
           unitPrice: 250.00,
           totalPrice: 12500.00,
@@ -180,7 +247,7 @@ export const UploadView: React.FC<UploadViewProps> = ({
     };
   };
 
-  // Process all queued files with Gemini OCR
+  // Process all queued files with Gemini OCR with concurrency & fast image optimization
   const processQueue = async () => {
     if (fileQueue.length === 0 || isProcessingQueue) return;
 
@@ -188,19 +255,33 @@ export const UploadView: React.FC<UploadViewProps> = ({
     setSaveSuccessMessage(null);
     setSaveErrorMessage(null);
 
-    const updatedQueue = [...fileQueue];
+    // Find all items needing processing
+    const indicesToProcess = fileQueue
+      .map((item, idx) => ({ item, idx }))
+      .filter(({ item }) => item.status !== 'COMPLETED')
+      .map(({ idx }) => idx);
 
-    for (let i = 0; i < updatedQueue.length; i++) {
-      const item = updatedQueue[i];
-      if (item.status === 'COMPLETED') continue;
+    if (indicesToProcess.length === 0) {
+      setIsProcessingQueue(false);
+      return;
+    }
 
-      // Update status to processing
-      updatedQueue[i] = { ...item, status: 'PROCESSING' };
-      setFileQueue([...updatedQueue]);
+    // Process single item worker
+    const processSingleItem = async (i: number) => {
+      // Mark as PROCESSING
+      setFileQueue((prev) => {
+        const next = [...prev];
+        if (next[i]) {
+          next[i] = { ...next[i], status: 'PROCESSING', error: undefined };
+        }
+        return next;
+      });
+
+      const currentItem = fileQueue[i];
+      if (!currentItem) return;
 
       try {
-        const base64Data = await fileToBase64(item.file);
-        const mimeType = item.file.type || (item.file.name.endsWith('.pdf') ? 'application/pdf' : 'image/jpeg');
+        const { base64Data, mimeType } = await optimizeImageForOcr(currentItem.file);
 
         let ocrData: any = null;
 
@@ -211,7 +292,7 @@ export const UploadView: React.FC<UploadViewProps> = ({
             body: JSON.stringify({
               fileBase64: base64Data,
               mimeType: mimeType,
-              fileName: item.file.name,
+              fileName: currentItem.file.name,
             }),
           });
 
@@ -224,7 +305,7 @@ export const UploadView: React.FC<UploadViewProps> = ({
         }
 
         if (!ocrData) {
-          const fb = createClientFallback(item.file.name);
+          const fb = createClientFallback(currentItem.file.name);
           ocrData = {
             ...fb,
             vatAnalysis: {
@@ -240,7 +321,7 @@ export const UploadView: React.FC<UploadViewProps> = ({
         // Construct ExtractedInvoice
         const extracted: ExtractedInvoice = {
           id: 'inv_' + Date.now() + '_' + i,
-          fileName: item.file.name,
+          fileName: currentItem.file.name,
           fileDataUrl: base64Data,
           fileType: mimeType,
           invoiceNo: ocrData.invoiceNo || 'INV-' + Date.now().toString().slice(-6),
@@ -272,17 +353,20 @@ export const UploadView: React.FC<UploadViewProps> = ({
           status: 'PENDING_REVIEW',
         };
 
-        updatedQueue[i] = {
-          ...item,
-          status: 'COMPLETED',
-          extracted,
-        };
-        setFileQueue([...updatedQueue]);
+        setFileQueue((prev) => {
+          const next = [...prev];
+          if (next[i]) {
+            next[i] = {
+              ...next[i],
+              status: 'COMPLETED',
+              extracted,
+            };
+          }
+          return next;
+        });
 
-        // If no active review, set this one
-        if (activeInvoiceIndex === null) {
-          setActiveInvoiceIndex(i);
-        }
+        // Set active invoice index immediately so user can review without waiting for whole queue
+        setActiveInvoiceIndex((prevIdx) => (prevIdx === null ? i : prevIdx));
       } catch (err: any) {
         console.error('Error processing item:', err);
         let errorMsg = err?.message || 'ประมวลผล OCR ล้มเหลว';
@@ -302,15 +386,31 @@ export const UploadView: React.FC<UploadViewProps> = ({
           errorMsg = 'AI มีผู้ใช้งานสูงชั่วคราว กรุณากด "ลองใหม่"';
         }
 
-        updatedQueue[i] = {
-          ...item,
-          status: 'FAILED',
-          error: errorMsg,
-        };
-        setFileQueue([...updatedQueue]);
+        setFileQueue((prev) => {
+          const next = [...prev];
+          if (next[i]) {
+            next[i] = {
+              ...next[i],
+              status: 'FAILED',
+              error: errorMsg,
+            };
+          }
+          return next;
+        });
       }
-    }
+    };
 
+    // Run with concurrency limit of 2 parallel workers for fast throughput
+    const CONCURRENCY = 2;
+    let cursor = 0;
+    const workers = Array.from({ length: Math.min(CONCURRENCY, indicesToProcess.length) }, async () => {
+      while (cursor < indicesToProcess.length) {
+        const itemIndex = indicesToProcess[cursor++];
+        await processSingleItem(itemIndex);
+      }
+    });
+
+    await Promise.all(workers);
     setIsProcessingQueue(false);
   };
 
@@ -324,8 +424,7 @@ export const UploadView: React.FC<UploadViewProps> = ({
     setFileQueue([...updatedQueue]);
 
     try {
-      const base64Data = await fileToBase64(item.file);
-      const mimeType = item.file.type || (item.file.name.endsWith('.pdf') ? 'application/pdf' : 'image/jpeg');
+      const { base64Data, mimeType } = await optimizeImageForOcr(item.file);
 
       let ocrData: any = null;
 
@@ -507,6 +606,7 @@ export const UploadView: React.FC<UploadViewProps> = ({
       tpuCode: '',
       productName: '',
       genericName: '',
+      unit: 'กล่อง',
       quantity: 1,
       unitPrice: 0,
       totalPrice: 0,
@@ -549,7 +649,7 @@ export const UploadView: React.FC<UploadViewProps> = ({
 
     const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
 
-    // Build the 15-column SheetRowRecord entries
+    // Build the 16-column SheetRowRecord entries
     const newRows: SheetRowRecord[] = currentInvoice.items.map((item, idx) => ({
       id: `row_${Date.now()}_${idx}`,
       timestamp: timestamp,
@@ -561,6 +661,7 @@ export const UploadView: React.FC<UploadViewProps> = ({
       gpuCode: item.gpuCode || '',
       tpuCode: item.tpuCode || '',
       productName: item.productName || '-',
+      unit: item.unit || 'กล่อง',
       quantity: item.quantity,
       unitPrice: item.unitPrice,
       totalPrice: item.totalPrice,
@@ -635,6 +736,7 @@ export const UploadView: React.FC<UploadViewProps> = ({
           tpuCode: '782910',
           productName: 'Berlin Paracetamol 500 mg tab (Box 1000s)',
           genericName: 'Paracetamol 500 mg',
+          unit: 'กล่อง',
           quantity: 40,
           unitPrice: 280.00,
           totalPrice: 11200.00,
@@ -645,6 +747,7 @@ export const UploadView: React.FC<UploadViewProps> = ({
           tpuCode: '891045',
           productName: 'Lipidop 20 mg (Atorvastatin) 30s',
           genericName: 'Atorvastatin calcium 20 mg',
+          unit: 'กล่อง',
           quantity: 35,
           unitPrice: 710.00,
           totalPrice: 24850.00,
@@ -655,6 +758,7 @@ export const UploadView: React.FC<UploadViewProps> = ({
           tpuCode: '652130',
           productName: 'Lodipin 5 mg (Amlodipine) 100s',
           genericName: 'Amlodipine besylate 5 mg',
+          unit: 'กล่อง',
           quantity: 38,
           unitPrice: 373.00,
           totalPrice: 14176.00,
@@ -1153,14 +1257,17 @@ export const UploadView: React.FC<UploadViewProps> = ({
                   <tr>
                     <th className="py-2.5 px-3 w-8">#</th>
                     <th className="py-2.5 px-3 min-w-[200px]">ชื่อสินค้า (ชื่อยาการค้า) [I]</th>
+                    <th className="py-2.5 px-2 min-w-[120px] bg-emerald-50/60 text-emerald-900">
+                      หน่วย (Unit) [J] 💊
+                    </th>
                     <th className="py-2.5 px-3 min-w-[180px] bg-teal-50/60 text-teal-900">
-                      ชื่อยาสามัญ (Generic Name) [O] ✨
+                      ชื่อยาสามัญ (Generic Name) [P] ✨
                     </th>
                     <th className="py-2.5 px-2 w-24">GPU Code [G]</th>
                     <th className="py-2.5 px-2 w-24">TPU Code [H]</th>
-                    <th className="py-2.5 px-2 w-20 text-right">จำนวน [J]</th>
-                    <th className="py-2.5 px-2 w-24 text-right">ราคา/หน่วย [K]</th>
-                    <th className="py-2.5 px-3 w-28 text-right">ราคารวม [L]</th>
+                    <th className="py-2.5 px-2 w-20 text-right">จำนวน [K]</th>
+                    <th className="py-2.5 px-2 w-24 text-right">ราคา/หน่วย [L]</th>
+                    <th className="py-2.5 px-3 w-28 text-right">ราคารวม [M]</th>
                     <th className="py-2.5 px-2 w-10 text-center">ลบ</th>
                   </tr>
                 </thead>
@@ -1177,6 +1284,35 @@ export const UploadView: React.FC<UploadViewProps> = ({
                           onChange={(e) => updateItemRow(idx, { productName: e.target.value })}
                           className="w-full px-2 py-1 rounded-md border border-slate-200 text-xs font-medium focus:ring-1 focus:ring-emerald-500"
                         />
+                      </td>
+
+                      {/* Unit / หน่วย [J] */}
+                      <td className="py-2 px-2 bg-emerald-50/20">
+                        <div className="flex flex-col gap-1">
+                          <input
+                            type="text"
+                            value={item.unit || ''}
+                            onChange={(e) => updateItemRow(idx, { unit: e.target.value })}
+                            className="w-full px-2 py-1 rounded-md border border-emerald-200 text-xs font-medium text-emerald-800 bg-white focus:ring-1 focus:ring-emerald-500"
+                            placeholder="ขวด/กล่อง/vial"
+                          />
+                          <div className="flex flex-wrap gap-1">
+                            {['ขวด', 'กล่อง', 'vial', 'Amp'].map((u) => (
+                              <button
+                                key={u}
+                                type="button"
+                                onClick={() => updateItemRow(idx, { unit: u })}
+                                className={`px-1.5 py-0.5 text-[10px] rounded transition-colors ${
+                                  item.unit === u
+                                    ? 'bg-emerald-600 text-white font-bold'
+                                    : 'bg-slate-100 hover:bg-slate-200 text-slate-600'
+                                }`}
+                              >
+                                {u}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
                       </td>
 
                       {/* Generic Name */}

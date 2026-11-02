@@ -4,6 +4,7 @@ export interface InvoiceItem {
   tpuCode: string; // รหัส TPU (5-8 หลัก)
   productName: string; // ชื่อสินค้า (ชื่อยาการค้า)
   genericName: string; // ชื่อยาสามัญ (AI วิเคราะห์)
+  unit: string;        // หน่วยนับ เช่น ขวด, กล่อง, vial, Amp, เม็ด, แคปซูล, หลอด, แผง
   quantity: number;
   unitPrice: number;
   totalPrice: number;
@@ -41,7 +42,7 @@ export interface ExtractedInvoice {
   savedTimestamp?: string;
 }
 
-// Exactly matches Columns A-O of the Google Sheet "บิล Invoice"
+// Matches Columns A-P of Google Sheet "บิล Invoice"
 export interface SheetRowRecord {
   id: string; // Internal unique row ID
   timestamp: string;      // A: Timestamp เวลาที่บันทึก
@@ -53,12 +54,13 @@ export interface SheetRowRecord {
   gpuCode: string;        // G: GPU Code รหัส GPU (5-8 หลัก)
   tpuCode: string;        // H: TPU Code รหัส TPU (5-8 หลัก)
   productName: string;    // I: Product Name ชื่อสินค้า(ชื่อยาการค้า)
-  quantity: number;       // J: Quantity จำนวน
-  unitPrice: number;      // K: Unit Price ราคาต่อหน่วย
-  totalPrice: number;     // L: Total Price ราคารวม
-  grandTotal: number;     // M: Grand Total ยอดรวมทั้งบิล
-  imageUrl: string;       // N: Image URL ลิงก์รูปภาพบน Google Drive
-  genericName: string;    // O: ชื่อยาสามัญ (AI วิเคราะห์)
+  unit: string;           // J: Unit หน่วย (ขวด, กล่อง, vial, Amp, เม็ด ฯลฯ)
+  quantity: number;       // K: Quantity จำนวน
+  unitPrice: number;      // L: Unit Price ราคาต่อหน่วย
+  totalPrice: number;     // M: Total Price ราคารวม
+  grandTotal: number;     // N: Grand Total ยอดรวมทั้งบิล
+  imageUrl: string;       // O: Image URL ลิงก์รูปภาพบน Google Drive
+  genericName: string;    // P: ชื่อยาสามัญ (AI วิเคราะห์)
   // Additional frontend metadata
   thumbnailUrl?: string;
   vatStatus?: VatStatus;

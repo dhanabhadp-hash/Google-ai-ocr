@@ -13,12 +13,13 @@ export function exportToExcel(records: SheetRowRecord[], fileNamePrefix = 'OCR_I
     'GPU Code (G)': r.gpuCode,
     'TPU Code (H)': r.tpuCode,
     'Product Name (I)': r.productName,
-    'Quantity (J)': r.quantity,
-    'Unit Price (K)': r.unitPrice,
-    'Total Price (L)': r.totalPrice,
-    'Grand Total (M)': r.grandTotal,
-    'Image URL (N)': r.imageUrl,
-    'ชื่อยาสามัญ (O)': r.genericName,
+    'Unit / หน่วย (J)': r.unit || 'กล่อง',
+    'Quantity (K)': r.quantity,
+    'Unit Price (L)': r.unitPrice,
+    'Total Price (M)': r.totalPrice,
+    'Grand Total (N)': r.grandTotal,
+    'Image URL (O)': r.imageUrl,
+    'ชื่อยาสามัญ (P)': r.genericName,
   }));
 
   const worksheet = XLSX.utils.json_to_sheet(formattedRows);
@@ -35,6 +36,7 @@ export function exportToExcel(records: SheetRowRecord[], fileNamePrefix = 'OCR_I
     { wch: 12 }, // GPU Code
     { wch: 12 }, // TPU Code
     { wch: 32 }, // Product Name
+    { wch: 12 }, // Unit
     { wch: 10 }, // Quantity
     { wch: 12 }, // Unit Price
     { wch: 14 }, // Total Price
@@ -61,6 +63,7 @@ export function exportToCsv(records: SheetRowRecord[], fileNamePrefix = 'OCR_INV
     'GPU Code',
     'TPU Code',
     'Product Name',
+    'Unit (หน่วย)',
     'Quantity',
     'Unit Price',
     'Total Price',
@@ -79,6 +82,7 @@ export function exportToCsv(records: SheetRowRecord[], fileNamePrefix = 'OCR_INV
     `"${(r.gpuCode || '').replace(/"/g, '""')}"`,
     `"${(r.tpuCode || '').replace(/"/g, '""')}"`,
     `"${(r.productName || '').replace(/"/g, '""')}"`,
+    `"${(r.unit || 'กล่อง').replace(/"/g, '""')}"`,
     r.quantity || 0,
     r.unitPrice || 0,
     r.totalPrice || 0,

@@ -25,6 +25,7 @@ export const INITIAL_SEED_RECORDS: SheetRowRecord[] = [
     gpuCode: '241850',
     tpuCode: '782910',
     productName: 'Berlin Paracetamol 500 mg tab (Box 100x10s)',
+    unit: 'กล่อง',
     quantity: 50,
     unitPrice: 280.00,
     totalPrice: 14000.00,
@@ -44,6 +45,7 @@ export const INITIAL_SEED_RECORDS: SheetRowRecord[] = [
     gpuCode: '315024',
     tpuCode: '891045',
     productName: 'Lipidop 20 mg (Atorvastatin) tab',
+    unit: 'กล่อง',
     quantity: 30,
     unitPrice: 720.00,
     totalPrice: 21600.00,
@@ -63,6 +65,7 @@ export const INITIAL_SEED_RECORDS: SheetRowRecord[] = [
     gpuCode: '189420',
     tpuCode: '652130',
     productName: 'Lodipin 5 mg (Amlodipine) tab',
+    unit: 'กล่อง',
     quantity: 40,
     unitPrice: 365.00,
     totalPrice: 14600.00,
@@ -82,6 +85,7 @@ export const INITIAL_SEED_RECORDS: SheetRowRecord[] = [
     gpuCode: '450128',
     tpuCode: '912044',
     productName: 'Patarphen 4 mg (Chlorpheniramine) tab',
+    unit: 'ขวด',
     quantity: 100,
     unitPrice: 45.00,
     totalPrice: 4500.00,
@@ -101,6 +105,7 @@ export const INITIAL_SEED_RECORDS: SheetRowRecord[] = [
     gpuCode: '582190',
     tpuCode: '310492',
     productName: 'Patar Omeprazole 20 mg cap',
+    unit: 'กล่อง',
     quantity: 60,
     unitPrice: 124.00,
     totalPrice: 7440.00,
@@ -120,6 +125,7 @@ export const INITIAL_SEED_RECORDS: SheetRowRecord[] = [
     gpuCode: '612390',
     tpuCode: '741209',
     productName: 'Diemox 500 mg (Amoxicillin) cap',
+    unit: 'กล่อง',
     quantity: 50,
     unitPrice: 185.00,
     totalPrice: 9250.00,
@@ -139,6 +145,7 @@ export const INITIAL_SEED_RECORDS: SheetRowRecord[] = [
     gpuCode: '723810',
     tpuCode: '852019',
     productName: 'Die-Cipro 500 mg (Ciprofloxacin) tab',
+    unit: 'กล่อง',
     quantity: 30,
     unitPrice: 151.00,
     totalPrice: 4530.00,
@@ -158,6 +165,7 @@ export const INITIAL_SEED_RECORDS: SheetRowRecord[] = [
     gpuCode: '891230',
     tpuCode: '412098',
     productName: 'Chumchon Metformin 500 mg tab',
+    unit: 'ขวด',
     quantity: 80,
     unitPrice: 140.00,
     totalPrice: 11200.00,
@@ -177,6 +185,7 @@ export const INITIAL_SEED_RECORDS: SheetRowRecord[] = [
     gpuCode: '912401',
     tpuCode: '523019',
     productName: 'Chumchon Losartan 50 mg tab',
+    unit: 'กล่อง',
     quantity: 45,
     unitPrice: 215.00,
     totalPrice: 9675.00,
@@ -196,6 +205,7 @@ export const INITIAL_SEED_RECORDS: SheetRowRecord[] = [
     gpuCode: '109284',
     tpuCode: '210948',
     productName: 'Sterile Water for Irrigation 1000 ml bottle',
+    unit: 'ขวด',
     quantity: 120,
     unitPrice: 42.00,
     totalPrice: 5040.00,
@@ -283,7 +293,10 @@ export function loadRecords(): SheetRowRecord[] {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed.slice(0, 500); // 500 limit
+        return parsed.slice(0, 500).map((r: any) => ({
+          ...r,
+          unit: r.unit || 'กล่อง',
+        }));
       }
     }
   } catch (e) {
