@@ -15,10 +15,12 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 const geminiApiKey = (process.env.GEMINI_API_KEY || '').trim();
-const ai = new GoogleGenAI({
+const openRouterApiKey = (process.env.OPENROUTER_API_KEY || '').trim();
+const openRouterModel = (process.env.OPENROUTER_MODEL || 'google/gemini-2.5-flash').trim();
+const ai = geminiApiKey ? new GoogleGenAI({
   apiKey: geminiApiKey,
   httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
-});
+}) : null;
 
 function analyzeVat(subtotal: number, grandTotal: number, vatAmount: number) {
   const expectedVat = Math.round(subtotal * 0.07 * 100) / 100;
@@ -51,7 +53,7 @@ function parseJson(text: string): any {
 }
 
 async function callGemini(contents: any, config: any) {
-  // Use supported, stable Flash model IDs; do not silently substitute sample invoices on failure.
+  if (!ai) throw new Error('GEMINI_API_KEY is not configured');
   const models = ['gemini-2.5-flash', 'gemini-2.0-flash'];
   let lastError: any;
 
@@ -78,9 +80,64 @@ async function callGemini(contents: any, config: any) {
       if (timeout) clearTimeout(timeout);
     }
   }
-
   throw lastError || new Error('Gemini OCR ไม่สามารถประมวลผลเอกสารได้');
 }
+
+async function callOpenRouter(base64: string, mimeType: string, prompt: string): Promise<string> {
+  if (!openRouterApiKey) throw new Error('OPENROUTER_API_KEY is not configured');
+  // OpenRouter vision inputs use image data URLs. PDF support varies by model/provider,
+  // so do not pass a PDF as an image and risk silently producing incorrect OCR.
+  if (!mimeType.startsWith('image/')) {
+    throw new Error('OpenRouter fallback รองรับเฉพาะไฟล์ภาพ; PDF ต้องใช้ Gemini หรือแปลงเป็นภาพก่อน');
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60000);
+  try {
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${openRouterApiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': process.env.OPENROUTER_SITE_URL || 'http://localhost:3000',
+        'X-Title': process.env.OPENROUTER_APP_NAME || 'Google AI OCR',
+      },
+      body: JSON.stringify({
+        model: openRouterModel,
+        temperature: 0.1,
+        response_format: { type: 'json_object' },
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}` } },
+          ],
+        }],
+      }),
+    });
+    const body: any = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const providerMessage = body?.error?.message || body?.message || `HTTP ${response.status}`;
+      throw new Error(`OpenRouter ${openRouterModel}: ${providerMessage}`);
+    }
+    const content = body?.choices?.[0]?.message?.content;
+    const text = typeof content === 'string'
+      ? content
+      : Array.isArray(content)
+        ? content.map((part: any) => part?.text || '').join('')
+        : '';
+    if (!text.trim()) throw new Error('OpenRouter returned an empty response');
+    return text;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+const ocrSystemPrompt = `คุณคือ AI OCR สำหรับเอกสารใบสั่งซื้อ/ใบแจ้งหนี้ยา สกัดข้อมูลจากไฟล์แนบตามที่เห็นจริงเท่านั้น ห้ามเดาหรือสร้างข้อมูลขึ้นเอง หากไม่พบให้ใช้ string ว่างหรือ 0 และห้ามใช้ข้อมูลจากชื่อไฟล์แทนข้อมูลในเอกสาร
+ตอบเป็น JSON เท่านั้น ไม่มี Markdown ตาม schema นี้:
+{"invoiceNo":"","companyName":"","taxId":"","invoiceDate":"YYYY-MM-DD","salesperson":"","subtotal":0,"vatAmount":0,"grandTotal":0,"items":[{"gpuCode":"","tpuCode":"","productName":"","genericName":"","unit":"","quantity":0,"unitPrice":0,"totalPrice":0}],"rawNotes":""}
+แปลงวันที่ พ.ศ. เป็น ค.ศ. ระบุหน่วยนับตามที่พบบนบิล และอย่าสร้างรหัส GPU/TPU หากไม่มีในเอกสาร`;
 
 app.post('/api/ocr', async (req: Request, res: Response): Promise<void> => {
   try {
@@ -89,26 +146,61 @@ app.post('/api/ocr', async (req: Request, res: Response): Promise<void> => {
       res.status(400).json({ success: false, error: 'กรุณาส่ง fileBase64 และ mimeType' });
       return;
     }
-    if (!geminiApiKey) {
-      res.status(503).json({ success: false, error: 'ไม่พบ GEMINI_API_KEY ใน environment ของเซิร์ฟเวอร์' });
-      return;
-    }
 
     const cleanBase64 = fileBase64.replace(/^data:[^;]+;base64,/, '').replace(/\s/g, '');
     if (!cleanBase64 || !/^[A-Za-z0-9+/]*={0,2}$/.test(cleanBase64)) {
       res.status(400).json({ success: false, error: 'ข้อมูลไฟล์ Base64 ไม่ถูกต้อง' });
       return;
     }
+    if (!mimeType.startsWith('image/') && mimeType !== 'application/pdf') {
+      res.status(415).json({ success: false, error: 'รองรับเฉพาะไฟล์ภาพและ PDF' });
+      return;
+    }
 
-    const systemPrompt = `คุณคือ AI OCR สำหรับเอกสารใบสั่งซื้อ/ใบแจ้งหนี้ยา สกัดข้อมูลจากไฟล์แนบตามที่เห็นจริงเท่านั้น ห้ามเดาหรือสร้างข้อมูลขึ้นเอง หากไม่พบให้ใช้ string ว่างหรือ 0 และห้ามใช้ข้อมูลจากชื่อไฟล์แทนข้อมูลในเอกสาร\nตอบเป็น JSON เท่านั้นตาม schema นี้:\n{\"invoiceNo\":\"\",\"companyName\":\"\",\"taxId\":\"\",\"invoiceDate\":\"YYYY-MM-DD\",\"salesperson\":\"\",\"subtotal\":0,\"vatAmount\":0,\"grandTotal\":0,\"items\":[{\"gpuCode\":\"\",\"tpuCode\":\"\",\"productName\":\"\",\"genericName\":\"\",\"unit\":\"\",\"quantity\":0,\"unitPrice\":0,\"totalPrice\":0}],\"rawNotes\":\"\"}.\nคงเลขและข้อความตามเอกสาร แปลงวันที่ พ.ศ. เป็น ค.ศ. ระบุหน่วยนับตามที่พบบนบิล และอย่าสร้างรหัส GPU/TPU หากไม่มีในเอกสาร`;
-    const prompt = `${systemPrompt}\n\nสกัดข้อมูลจากเอกสารนี้อย่างละเอียด ชื่อไฟล์: ${String(fileName || 'invoice').slice(0, 200)}`;
-    const result = await callGemini([
-      { role: 'user', parts: [{ inlineData: { mimeType, data: cleanBase64 } }, { text: prompt }] },
-    ], { responseMimeType: 'application/json', temperature: 0.1 });
+    const prompt = `${ocrSystemPrompt}\n\nสกัดข้อมูลจากเอกสารนี้อย่างละเอียด ชื่อไฟล์: ${String(fileName || 'invoice').slice(0, 200)}`;
+    let provider: 'gemini' | 'openrouter';
+    let rawText = '';
+    let geminiError: any;
 
-    const parsed = parseJson(responseText(result));
+    // Gemini is the primary provider. On failure (or missing Gemini key), try OpenRouter.
+    if (ai) {
+      try {
+        const result = await callGemini([
+          { role: 'user', parts: [{ inlineData: { mimeType, data: cleanBase64 } }, { text: prompt }] },
+        ], { responseMimeType: 'application/json', temperature: 0.1 });
+        rawText = responseText(result);
+        provider = 'gemini';
+      } catch (error: any) {
+        geminiError = error;
+        console.warn('[OCR] Gemini failed; attempting OpenRouter fallback:', error?.message || error);
+      }
+    } else {
+      geminiError = new Error('GEMINI_API_KEY is not configured');
+      console.warn('[OCR] GEMINI_API_KEY is missing; attempting OpenRouter fallback');
+    }
+
+    if (!rawText.trim()) {
+      if (!openRouterApiKey) {
+        if (ai && geminiError) throw geminiError;
+        res.status(503).json({
+          success: false,
+          error: 'ไม่พบ GEMINI_API_KEY หรือ OPENROUTER_API_KEY ที่ใช้งานได้ใน environment ของเซิร์ฟเวอร์',
+        });
+        return;
+      }
+      try {
+        rawText = await callOpenRouter(cleanBase64, mimeType, prompt);
+        provider = 'openrouter';
+      } catch (openRouterError: any) {
+        const geminiMessage = geminiError?.message || 'ไม่ได้ตั้งค่า Gemini API key';
+        const openRouterMessage = openRouterError?.message || 'OpenRouter OCR failed';
+        throw new Error(`OCR ไม่สำเร็จจากทั้งสองผู้ให้บริการ (Gemini: ${geminiMessage}; OpenRouter: ${openRouterMessage})`);
+      }
+    }
+
+    const parsed = parseJson(rawText);
     if (!parsed || typeof parsed !== 'object') {
-      throw new Error('Gemini ส่งผลลัพธ์ว่างหรือ JSON ไม่ถูกต้อง กรุณาลองใหม่');
+      throw new Error(`${provider!} ส่งผลลัพธ์ว่างหรือ JSON ไม่ถูกต้อง กรุณาลองใหม่`);
     }
 
     const money = (value: unknown) => {
@@ -143,7 +235,8 @@ app.post('/api/ocr', async (req: Request, res: Response): Promise<void> => {
         vatAnalysis: analyzeVat(subtotal, grandTotal, vatAmount),
         items,
         rawNotes: String(parsed.rawNotes || ''),
-        authNotice: '',
+        authNotice: provider === 'openrouter' ? `ประมวลผลด้วย OpenRouter (${openRouterModel}) เนื่องจาก Gemini ใช้งานไม่ได้` : '',
+        provider,
       },
     });
   } catch (error: any) {
@@ -169,10 +262,7 @@ app.post('/api/line/notify', async (req: Request, res: Response): Promise<void> 
     const { invoiceNo, companyName, grandTotal, itemCount, vatStatus, date, driveUrl } = invoiceSummary;
     const payload = {
       to: req.body.toUserId || undefined,
-      messages: [{
-        type: 'text',
-        text: `บันทึกบิลคลังยาสำเร็จ\nเลขที่บิล: ${invoiceNo || '-'}\nผู้จำหน่าย: ${companyName || '-'}\nวันที่: ${date || '-'}\nจำนวนรายการ: ${itemCount || 1}\nยอดรวม: ฿${Number(grandTotal || 0).toLocaleString('th-TH', { minimumFractionDigits: 2 })}\nVAT: ${vatStatus || 'ตรวจสอบแล้ว'}\nDrive: ${driveUrl || '-'}`,
-      }],
+      messages: [{ type: 'text', text: `บันทึกบิลคลังยาสำเร็จ\nเลขที่บิล: ${invoiceNo || '-'}\nผู้จำหน่าย: ${companyName || '-'}\nวันที่: ${date || '-'}\nจำนวนรายการ: ${itemCount || 1}\nยอดรวม: ฿${Number(grandTotal || 0).toLocaleString('th-TH', { minimumFractionDigits: 2 })}\nVAT: ${vatStatus || 'ตรวจสอบแล้ว'}\nDrive: ${driveUrl || '-'}` }],
     };
     const endpoint = req.body.toUserId ? 'https://api.line.me/v2/bot/message/push' : 'https://api.line.me/v2/bot/message/broadcast';
     const lineResponse = await fetch(endpoint, {
@@ -216,7 +306,13 @@ app.post('/api/gas/proxy', async (req: Request, res: Response): Promise<void> =>
 });
 
 app.get('/api/health', (_req: Request, res: Response) => {
-  res.json({ status: 'ok', appName: 'OCR INV. คลังยา รพ.สบปราบ', geminiConfigured: Boolean(geminiApiKey), timestamp: new Date().toISOString() });
+  res.json({
+    status: 'ok',
+    appName: 'OCR INV. คลังยา รพ.สบปราบ',
+    geminiConfigured: Boolean(geminiApiKey),
+    openRouterConfigured: Boolean(openRouterApiKey),
+    timestamp: new Date().toISOString(),
+  });
 });
 
 async function startServer() {
